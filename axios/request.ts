@@ -1,15 +1,16 @@
-import axios, { AxiosRequestConfig, AxiosResponse, Canceler } from 'axios'
+import axios, { AxiosInstance, AxiosRequestConfig, AxiosResponse, Canceler } from 'axios'
+import Storage from '@/utils/Storage'
+import { Modal, message as Message } from 'ant-design-vue'
+import store from '@/store';
+import { checkStatus } from './check-status';
+import { BasicResponseModel } from '@/api/model/common';
+import { AuthForm } from '@/api/model/userModel';
 
-export interface BasicResponseModel<T = any> {
-  code: number
-  msg: string
-  data?: T
-  token?: string
-}
-
-export interface RequestConfigOptions extends AxiosRequestConfig {
-  noToken?: boolean
-  neverCancel?: boolean
+declare module 'axios' {
+  export interface AxiosRequestConfig {
+    noToken?: boolean
+    neverCancel?: boolean
+  }
 }
 
 const CancelToken = axios.CancelToken; // axios 的取消请求
@@ -37,6 +38,7 @@ const removePending = (config: AxiosRequestConfig, cancel: Canceler | null) => {
   const flgUrl = config.url;
   if (pending.includes(flgUrl)) {
     if (cancel) {
+      // cancel(`pending-error ${flgUrl}`);
       cancel('取消重复请求');
     } else {
       pending.splice(pending.indexOf(flgUrl), 1); // 删除记录
@@ -49,7 +51,7 @@ const removePending = (config: AxiosRequestConfig, cancel: Canceler | null) => {
 }
 
 // request拦截器
-server.interceptors.request.use((config: RequestConfigOptions) => {
+server.interceptors.request.use((config: AxiosRequestConfig) => {
   
   if (!config.neverCancel) {
     // 生成canalToken
@@ -60,7 +62,7 @@ server.interceptors.request.use((config: RequestConfigOptions) => {
 
   if (Storage.getCookie('token') && !config.noToken) {
     Object.assign(config.headers, {
-      Authorization: 'Bearder ' + Storage.getCookie('token')
+      Authorization: 'Bearer ' + Storage.getCookie('token')
     })
   }
 
@@ -68,42 +70,65 @@ server.interceptors.request.use((config: RequestConfigOptions) => {
 })
 
 // response响应拦截器
-server.interceptors.response.use((res: AxiosResponse<BasicResponseModel>) => {
+server.interceptors.response.use((res: AxiosResponse<BasicResponseModel | AuthForm>) => {
   removePending(res.config, null)
-  const { code = 200 } = res.data
+  
+  // 过滤登录请求
+  if(res.config.url === '/auth/oauth/token') {
+    return res.data;
+  }
+  
+  const { code = 0, msg } = res.data as BasicResponseModel
 
   // token失效或无权限
   if (code === 401) {
-    // Modal.destroyAll()
-    // Modal.confirm({
-    //   content: '登录状态已过期，您可以继续留在该页面，或者重新登录',
-    //   onOk: () => {
-    //     store.dispatch('user/logout');
-    //   },
-    //   onCancel: () => {
-    //     Modal.destroyAll()
-    //   }
-    // })
+    Modal.destroyAll()
+    Modal.confirm({
+      content: '登录状态已过期，您可以继续留在该页面，或者重新登录',
+      onOk: () => {
+        store.dispatch('user/logout');
+      },
+      onCancel: () => {
+        Modal.destroyAll()
+      }
+    })
     return Promise.reject()
   }
 
-  if (code !== 200) {
-    // checkStatus(code, res.data.msg)
+  if (code !== 0) {
+    checkStatus(code, msg)
   }
+
   return res.data
 },
   error => {
-    let { message } = error;
+    let { config, message } = error;
+
+    removePending(config, null)
+    
     if (message == "Network Error") {
       message = "后端接口连接异常";
     }
     else if (message.includes("timeout")) {
       message = "系统接口请求超时";
     }
+    else if(message.includes("Request failed with status code 424")){
+      Modal.destroyAll()
+      Modal.confirm({
+        content: '登录状态已过期，您可以继续留在该页面，或者重新登录',
+        onOk: () => {
+          store.dispatch('user/logout');
+        },
+        onCancel: () => {
+          Modal.destroyAll()
+        }
+      })
+      return Promise.reject()
+    }
     else if (message.includes("Request failed with status code")) {
       message = "系统接口" + message.substr(message.length - 3) + "异常";
     }
-    // Message.error(message)
+    Message.error(message)
     return Promise.reject(error)
   }
 )
